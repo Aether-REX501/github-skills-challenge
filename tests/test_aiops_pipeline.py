@@ -1,4 +1,5 @@
 from pathlib import Path
+import runpy
 
 from src.anomaly_detector import AnomalyDetector
 from src.aiops_pipeline import run_pipeline
@@ -42,6 +43,28 @@ def test_anomalous_record_is_detected():
     assert event["type"] == "ANOMALY"
 
 
+def test_detector_reports_each_anomaly_reason():
+    detector = AnomalyDetector()
+    record = {
+        "timestamp": "2026-09-20T10:10:00",
+        "service": "payment-service",
+        "response_time_ms": 501,
+        "cpu_percent": 81,
+        "memory_percent": 81,
+        "log_level": "WARNING",
+        "message": "Service warning",
+    }
+
+    event = detector.detect(record)
+
+    assert event["reasons"] == [
+        "High response time",
+        "High CPU utilization",
+        "High memory utilization",
+        "Error log detected",
+    ]
+
+
 def test_producer_publishes_event():
     topic = EventTopic("anomaly-events")
     producer = EventProducer(topic)
@@ -53,6 +76,14 @@ def test_producer_publishes_event():
 
     assert producer.publish(event)
     assert len(topic.get_messages()) == 1
+
+
+def test_producer_rejects_empty_event():
+    topic = EventTopic("anomaly-events")
+    producer = EventProducer(topic)
+
+    assert producer.publish(None) is False
+    assert topic.get_messages() == []
 
 
 def test_consumer_receives_event():
@@ -70,3 +101,31 @@ def test_consumer_receives_event():
     messages = consumer.consume()
 
     assert len(messages) == 1
+
+
+def test_topic_returns_a_copy_and_can_clear_messages():
+    topic = EventTopic("anomaly-events")
+    topic.publish({"type": "ANOMALY"})
+
+    messages = topic.get_messages()
+    messages.clear()
+
+    assert len(topic.get_messages()) == 1
+    topic.clear()
+    assert topic.get_messages() == []
+
+
+def test_pipeline_processes_service_data():
+    result = run_pipeline(str(Path("data/service_data.json")))
+
+    assert result["records_processed"] == 10
+    assert len(result["anomalies_detected"]) == 2
+    assert result["events_consumed"] == []
+
+
+def test_pipeline_script_entry_point(capsys):
+    runpy.run_path(str(Path("src/aiops_pipeline.py")), run_name="__main__")
+
+    output = capsys.readouterr().out
+    assert "AIOps Pipeline Result" in output
+    assert "Records processed: 10" in output
